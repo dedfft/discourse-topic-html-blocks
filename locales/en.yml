@@ -1,5 +1,5 @@
 en:
   theme_metadata:
-    description: "Render custom HTML (e.g. iframes) below the first post on specified topics. Group topics under named blocks (e.g. 'Italy', 'Career Coaching') and reuse the same HTML across many topics."
+    description: "Render custom HTML (e.g. iframes) below the first post on specified topics. Group topics under named blocks (e.g. 'Italy', 'Career Coaching') and reuse the same HTML across many topics. Optional per-locale overrides let you show different HTML to viewers in different languages."
   theme_settings:
-    blocks: "Named HTML blocks. Each block: name (label), topic_ids (comma-separated topic IDs, e.g. 123,456), html (markup injected after post #1 — typically an iframe)."
+    blocks: "Named HTML blocks. Each block: name (label), topic_ids (comma-separated topic IDs, e.g. 123,456), html (default markup injected after post #1 — typically an iframe), locale_overrides (optional list — for each, set locale e.g. 'en', 'ru', 'it' and the html to render for viewers in that locale; the default html is used if no override matches)."

@@ -16,3 +16,17 @@ blocks:
       html:
         type: string
         required: true
+      locale_overrides:
+        type: objects
+        schema:
+          name: locale_override
+          identifier: locale
+          properties:
+            locale:
+              type: string
+              required: true
+              validations:
+                min_length: 2
+            html:
+              type: string
+              required: true
