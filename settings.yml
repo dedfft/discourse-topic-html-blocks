@@ -24,9 +24,5 @@ blocks:
           properties:
             locale:
               type: string
-              required: true
-              validations:
-                min_length: 2
             html:
               type: string
-              required: true
