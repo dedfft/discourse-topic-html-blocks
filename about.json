@@ -1,0 +1,7 @@
+{
+  "name": "Topic HTML Blocks",
+  "about_url": "https://github.com/dedfft/discourse-topic-html-blocks",
+  "license_url": "https://github.com/dedfft/discourse-topic-html-blocks/blob/main/LICENSE",
+  "component": true,
+  "assets": {}
+}

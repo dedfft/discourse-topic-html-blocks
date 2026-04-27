@@ -1,0 +1,5 @@
+en:
+  theme_metadata:
+    description: "Render custom HTML (e.g. iframes) below the first post on specified topics. Group topics under named blocks (e.g. 'Italy', 'Career Coaching') and reuse the same HTML across many topics."
+  theme_settings:
+    blocks: "Named HTML blocks. Each block: name (label), topic_ids (comma-separated topic IDs, e.g. 123,456), html (markup injected after post #1 — typically an iframe)."
