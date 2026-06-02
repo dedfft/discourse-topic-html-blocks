@@ -12,7 +12,12 @@ blocks:
           min_length: 1
       topic_ids:
         type: string
-        required: true
+      all_topics:
+        type: boolean
+      category_ids:
+        type: categories
+      exclude_topic_ids:
+        type: string
       html:
         type: string
         required: true
