@@ -1,17 +1,25 @@
 import { apiInitializer } from "discourse/lib/api";
 
-export default apiInitializer("0.8.42", (api) => {
-  let blocksRaw = [];
+export default apiInitializer("0.8.43", (api) => {
+  let bottomRaw = [];
+  let topRaw = [];
   try {
-    blocksRaw = JSON.parse(JSON.stringify(settings.blocks || []));
+    bottomRaw = JSON.parse(JSON.stringify(settings.blocks || []));
   } catch (e) {
-    blocksRaw = [];
+    bottomRaw = [];
+  }
+  try {
+    topRaw = JSON.parse(JSON.stringify(settings.top_blocks || []));
+  } catch (e) {
+    topRaw = [];
   }
 
   const enableRemote = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
   ).replace(/\/+$/, "");
+  const compactMaxRaw = parseInt(settings.compact_max_chars, 10);
+  const compactMax = isNaN(compactMaxRaw) ? 600 : compactMaxRaw;
 
   function parseIds(val) {
     // Accepts a native categories array ([4, 8]) or a comma string ("4,8").
@@ -19,40 +27,32 @@ export default apiInitializer("0.8.42", (api) => {
     return arr.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
   }
 
-  function posOf(b) {
-    return String(b.position || "bottom").toLowerCase() === "top"
-      ? "top"
-      : "bottom";
-  }
-
-  // Specific topic_id -> [blocks] (always wins over forum-wide blocks at the
-  // same position). A topic can carry several blocks (e.g. a top strip + a
-  // bottom card), so the value is an array, not a single block.
+  // topic_id -> [blocks]; blocks with all_topics render on every first post.
+  // Each block is tagged with _slot ('top' | 'bottom') by which list it's in.
   const topicMap = new Map();
-  // Blocks with all_topics: true, rendered on every first post (optionally
-  // narrowed by category_ids, and minus any exclude_topic_ids).
   const globalBlocks = [];
+  let uidCounter = 0;
 
-  blocksRaw.forEach((b, idx) => {
-    if (!b || !b.html) return;
+  function ingest(list, slot) {
+    list.forEach((b) => {
+      if (!b || !b.html) return;
+      b._uid = "b" + uidCounter++;
+      b._slot = slot;
 
-    // Stable per-block id (its position in the settings list) so idempotency is
-    // keyed on the block itself, not its name — two blocks can share a name
-    // and/or a position without one suppressing the other.
-    b._uid = "b" + idx;
-
-    const isGlobal = b.all_topics === true || String(b.all_topics) === "true";
-    if (isGlobal) {
-      b._cats = new Set(parseIds(b.category_ids));
-      b._exclude = new Set(parseIds(b.exclude_topic_ids));
-      globalBlocks.push(b);
-    }
-
-    for (const id of parseIds(b.topic_ids)) {
-      if (!topicMap.has(id)) topicMap.set(id, []);
-      topicMap.get(id).push(b);
-    }
-  });
+      const isGlobal = b.all_topics === true || String(b.all_topics) === "true";
+      if (isGlobal) {
+        b._cats = new Set(parseIds(b.category_ids));
+        b._exclude = new Set(parseIds(b.exclude_topic_ids));
+        globalBlocks.push(b);
+      }
+      for (const id of parseIds(b.topic_ids)) {
+        if (!topicMap.has(id)) topicMap.set(id, []);
+        topicMap.get(id).push(b);
+      }
+    });
+  }
+  ingest(topRaw, "top");
+  ingest(bottomRaw, "bottom");
 
   function getCurrentLocale() {
     try {
@@ -69,6 +69,12 @@ export default apiInitializer("0.8.42", (api) => {
     return "";
   }
 
+  // ru/en/it base of the current locale (default ru) — for data-papers-src-base.
+  function baseLang() {
+    const loc = getCurrentLocale().split(/[-_]/)[0];
+    return loc === "ru" || loc === "en" || loc === "it" ? loc : "ru";
+  }
+
   function pickHtml(block) {
     const overrides = Array.isArray(block.locale_overrides)
       ? block.locale_overrides
@@ -82,11 +88,11 @@ export default apiInitializer("0.8.42", (api) => {
       if (!o || !o.locale || !o.html) continue;
       if (String(o.locale).toLowerCase() === locale) return o.html;
     }
-    const baseLang = locale.split(/[-_]/)[0];
-    if (baseLang && baseLang !== locale) {
+    const base = locale.split(/[-_]/)[0];
+    if (base && base !== locale) {
       for (const o of overrides) {
         if (!o || !o.locale || !o.html) continue;
-        if (String(o.locale).toLowerCase() === baseLang) return o.html;
+        if (String(o.locale).toLowerCase() === base) return o.html;
       }
     }
     return block.html;
@@ -176,6 +182,14 @@ export default apiInitializer("0.8.42", (api) => {
     el.innerHTML = html;
   }
 
+  // On a short first post, collapse the sections the CMS marked .gtc__hide-short
+  // by toggling the card root into compact mode.
+  function applyCompact(scope, isShort) {
+    if (!isShort) return;
+    const card = scope.querySelector(".gtc");
+    if (card) card.classList.add("gtc--compact");
+  }
+
   function removeWrapper(el) {
     const w = el.closest(".topic-html-block, .topic-html-strip");
     (w || el).remove();
@@ -225,18 +239,27 @@ export default apiInitializer("0.8.42", (api) => {
     ensureFormListener();
   }
 
-  // Fill every [data-papers-src] marker inside a freshly-injected wrapper:
-  //   - data-papers-embed-src present -> mount the form iframe (if enabled)
-  //   - otherwise                     -> replace innerHTML with fetched html
-  // On disabled-from-CMS, drop the wrapper; on fetch error/timeout, keep the
-  // marker's existing inner html as the offline fallback.
-  function hydrateMarkers(wrapper) {
-    const markers = wrapper.querySelectorAll("[data-papers-src]");
+  // Fill every marker inside a freshly-injected wrapper:
+  //   - data-papers-src="<full url>"            -> fetch that url
+  //   - data-papers-src-base="<base url>"       -> append ?lang=<locale>
+  //   - data-papers-embed-src present           -> mount the form iframe
+  //   - otherwise                               -> replace innerHTML with html
+  // Disabled-from-CMS drops the wrapper; fetch error keeps the inner fallback.
+  function hydrateMarkers(wrapper, isShort) {
+    const markers = wrapper.querySelectorAll(
+      "[data-papers-src],[data-papers-src-base]"
+    );
     markers.forEach((el) => {
       if (el.dataset.thbHydrated) return;
       el.dataset.thbHydrated = "1";
-      const url = el.getAttribute("data-papers-src");
+
+      let url = el.getAttribute("data-papers-src");
+      const base = el.getAttribute("data-papers-src-base");
+      if (!url && base) {
+        url = base.replace(/\/+$/, "") + "?lang=" + baseLang();
+      }
       if (!url) return;
+
       const embedSrc = el.getAttribute("data-papers-embed-src");
       el.setAttribute("data-thb-pending", "1");
       fetchBlock(url)
@@ -251,6 +274,7 @@ export default apiInitializer("0.8.42", (api) => {
             mountForm(el, embedSrc);
           } else if (data && data.html) {
             renderHtml(el, data.html);
+            applyCompact(el, isShort);
           }
           // else: leave the fallback inner html in place
         })
@@ -264,12 +288,14 @@ export default apiInitializer("0.8.42", (api) => {
   }
 
   window.__topicHtmlBlocksDebug = {
-    raw: blocksRaw,
+    bottom: bottomRaw,
+    top: topRaw,
     topicIds: Array.from(topicMap.keys()),
     globalBlocks: globalBlocks.map((g) => g.name || ""),
     locale: getCurrentLocale(),
     enableRemote,
     remoteBase,
+    compactMax,
   };
 
   if (topicMap.size === 0 && globalBlocks.length === 0) return;
@@ -280,14 +306,18 @@ export default apiInitializer("0.8.42", (api) => {
       const post = helper.getModel && helper.getModel();
       if (!post || post.post_number !== 1) return;
 
+      // Measure the post body length BEFORE injecting (so the card's own text
+      // never counts). On SPA re-decoration the wrappers already exist and the
+      // idempotency guard skips them, so isShort is only used on first inject.
+      const postLen = (cooked.textContent || "").trim().length;
+      const isShort = compactMax > 0 && postLen < compactMax;
+
       // Topic-specific blocks always render. Global (all_topics) blocks render
-      // only at positions not already claimed by a topic-specific block, so a
-      // per-topic bottom card overrides the global bottom card while the global
-      // top strip still shows.
+      // only in slots not already claimed by a topic-specific block.
       const specific = topicMap.get(post.topic_id) || [];
-      const specificPositions = new Set(specific.map(posOf));
+      const specificSlots = new Set(specific.map((b) => b._slot));
       const matched = specific.concat(
-        pickGlobalBlocks(post).filter((g) => !specificPositions.has(posOf(g)))
+        pickGlobalBlocks(post).filter((g) => !specificSlots.has(g._slot))
       );
       if (matched.length === 0) return;
 
@@ -295,13 +325,13 @@ export default apiInitializer("0.8.42", (api) => {
         const html = pickHtml(block);
         if (!html) continue;
 
-        const isTop = posOf(block) === "top";
+        const isTop = block._slot === "top";
         const cls = isTop ? "topic-html-strip" : "topic-html-block";
         const name = block.name || "";
         const uid = block._uid || "b";
 
         // Per-block idempotency (keyed by the stable uid) so multiple blocks can
-        // share a name/position and SPA re-decoration never duplicates a block.
+        // share a name and SPA re-decoration never duplicates a block.
         if (cooked.querySelector(`:scope > [data-thb-uid="${cssEscape(uid)}"]`)) {
           continue;
         }
@@ -311,6 +341,7 @@ export default apiInitializer("0.8.42", (api) => {
         wrapper.dataset.blockName = name;
         wrapper.dataset.thbUid = uid;
         wrapper.innerHTML = html;
+        applyCompact(wrapper, isShort); // static (non-remote) cards
 
         if (isTop) {
           cooked.prepend(wrapper);
@@ -318,7 +349,7 @@ export default apiInitializer("0.8.42", (api) => {
           cooked.appendChild(wrapper);
         }
 
-        if (enableRemote) hydrateMarkers(wrapper);
+        if (enableRemote) hydrateMarkers(wrapper, isShort);
       }
     },
     { id: "topic-html-blocks" }
