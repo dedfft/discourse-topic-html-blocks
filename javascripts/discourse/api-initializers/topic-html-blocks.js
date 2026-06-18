@@ -1,6 +1,6 @@
 import { apiInitializer } from "discourse/lib/api";
 
-export default apiInitializer("0.8.41", (api) => {
+export default apiInitializer("0.8.42", (api) => {
   let blocksRaw = [];
   try {
     blocksRaw = JSON.parse(JSON.stringify(settings.blocks || []));
@@ -8,20 +8,38 @@ export default apiInitializer("0.8.41", (api) => {
     blocksRaw = [];
   }
 
+  const enableRemote = settings.enable_remote !== false;
+  const remoteBase = String(
+    settings.remote_base_url || "https://papers.eliteskillset.com"
+  ).replace(/\/+$/, "");
+
   function parseIds(val) {
     // Accepts a native categories array ([4, 8]) or a comma string ("4,8").
     const arr = Array.isArray(val) ? val : String(val || "").split(",");
     return arr.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
   }
 
-  // Specific topic_id -> block (always wins over a forum-wide block).
+  function posOf(b) {
+    return String(b.position || "bottom").toLowerCase() === "top"
+      ? "top"
+      : "bottom";
+  }
+
+  // Specific topic_id -> [blocks] (always wins over forum-wide blocks at the
+  // same position). A topic can carry several blocks (e.g. a top strip + a
+  // bottom card), so the value is an array, not a single block.
   const topicMap = new Map();
   // Blocks with all_topics: true, rendered on every first post (optionally
   // narrowed by category_ids, and minus any exclude_topic_ids).
   const globalBlocks = [];
 
-  for (const b of blocksRaw) {
-    if (!b || !b.html) continue;
+  blocksRaw.forEach((b, idx) => {
+    if (!b || !b.html) return;
+
+    // Stable per-block id (its position in the settings list) so idempotency is
+    // keyed on the block itself, not its name — two blocks can share a name
+    // and/or a position without one suppressing the other.
+    b._uid = "b" + idx;
 
     const isGlobal = b.all_topics === true || String(b.all_topics) === "true";
     if (isGlobal) {
@@ -31,9 +49,10 @@ export default apiInitializer("0.8.41", (api) => {
     }
 
     for (const id of parseIds(b.topic_ids)) {
-      topicMap.set(id, b);
+      if (!topicMap.has(id)) topicMap.set(id, []);
+      topicMap.get(id).push(b);
     }
-  }
+  });
 
   function getCurrentLocale() {
     try {
@@ -86,15 +105,162 @@ export default apiInitializer("0.8.41", (api) => {
     return null;
   }
 
-  function pickGlobalBlock(post) {
-    if (globalBlocks.length === 0) return null;
+  function pickGlobalBlocks(post) {
+    if (globalBlocks.length === 0) return [];
     const catId = getCategoryId(post);
+    const out = [];
     for (const g of globalBlocks) {
       if (g._exclude.has(post.topic_id)) continue;
       if (g._cats.size > 0 && (catId == null || !g._cats.has(catId))) continue;
-      return g;
+      out.push(g);
     }
-    return null;
+    return out;
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && typeof CSS.escape === "function") return CSS.escape(s);
+    return String(s).replace(/["\\\]]/g, "\\$&");
+  }
+
+  // --- Remote content (dynamic blocks fetched from the CMS) -----------------
+
+  const inflight = new Map();
+
+  function cacheGet(url) {
+    try {
+      const raw = sessionStorage.getItem("thb:" + url);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (Date.now() - o.t > 60000) return null; // 60s TTL
+      return o.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function cacheSet(url, data) {
+    try {
+      sessionStorage.setItem("thb:" + url, JSON.stringify({ data, t: Date.now() }));
+    } catch (e) {}
+  }
+
+  // One request per url even if decorateCookedElement fires several times.
+  function fetchBlock(url) {
+    const cached = cacheGet(url);
+    if (cached) return Promise.resolve(cached);
+    if (inflight.has(url)) return inflight.get(url);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const p = fetch(url, { signal: ctrl.signal, credentials: "omit", mode: "cors" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+      .then((data) => {
+        cacheSet(url, data);
+        return data;
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        inflight.delete(url);
+      });
+
+    inflight.set(url, p);
+    return p;
+  }
+
+  function renderHtml(el, html) {
+    // Trust boundary: `html` comes only from the admin-configured first-party
+    // CMS (data-papers-src URL) over HTTPS, the same trust level as the
+    // admin-pasted static `html` setting. <script> does NOT execute via
+    // innerHTML. To harden, route this through DOMPurify (ADD_TAGS:['style',
+    // 'svg',...]) in this one place.
+    el.innerHTML = html;
+  }
+
+  function removeWrapper(el) {
+    const w = el.closest(".topic-html-block, .topic-html-strip");
+    (w || el).remove();
+  }
+
+  // Resize lead-form iframes from their postMessage height reports. One
+  // module-scope listener, origin-checked against the embed origins we created.
+  const formOrigins = new Set();
+  let formListenerAdded = false;
+  function ensureFormListener() {
+    if (formListenerAdded) return;
+    formListenerAdded = true;
+    window.addEventListener("message", (e) => {
+      if (!formOrigins.has(e.origin)) return;
+      const d = e.data;
+      if (!d || d.type !== "thb-form-height" || typeof d.height !== "number") {
+        return;
+      }
+      document.querySelectorAll("iframe.topic-html-form-iframe").forEach((f) => {
+        try {
+          if (new URL(f.src).origin === e.origin) {
+            f.style.height = Math.max(200, d.height) + "px";
+          }
+        } catch (err) {}
+      });
+    });
+  }
+
+  function mountForm(el, embedSrc) {
+    let origin;
+    try {
+      origin = new URL(embedSrc).origin;
+    } catch (e) {
+      return;
+    }
+    const iframe = document.createElement("iframe");
+    iframe.className = "topic-html-form-iframe";
+    iframe.src = embedSrc;
+    iframe.loading = "lazy";
+    iframe.setAttribute("title", "Lead form");
+    iframe.style.width = "100%";
+    iframe.style.border = "0";
+    iframe.style.height = "520px"; // fallback until postMessage reports height
+    el.innerHTML = "";
+    el.appendChild(iframe);
+    formOrigins.add(origin);
+    ensureFormListener();
+  }
+
+  // Fill every [data-papers-src] marker inside a freshly-injected wrapper:
+  //   - data-papers-embed-src present -> mount the form iframe (if enabled)
+  //   - otherwise                     -> replace innerHTML with fetched html
+  // On disabled-from-CMS, drop the wrapper; on fetch error/timeout, keep the
+  // marker's existing inner html as the offline fallback.
+  function hydrateMarkers(wrapper) {
+    const markers = wrapper.querySelectorAll("[data-papers-src]");
+    markers.forEach((el) => {
+      if (el.dataset.thbHydrated) return;
+      el.dataset.thbHydrated = "1";
+      const url = el.getAttribute("data-papers-src");
+      if (!url) return;
+      const embedSrc = el.getAttribute("data-papers-embed-src");
+      el.setAttribute("data-thb-pending", "1");
+      fetchBlock(url)
+        .then((data) => {
+          if (!el.isConnected) return;
+          const enabled = !data || data.enabled !== false;
+          if (!enabled) {
+            removeWrapper(el);
+            return;
+          }
+          if (embedSrc) {
+            mountForm(el, embedSrc);
+          } else if (data && data.html) {
+            renderHtml(el, data.html);
+          }
+          // else: leave the fallback inner html in place
+        })
+        .catch(() => {
+          /* network error / timeout -> keep fallback inner html */
+        })
+        .finally(() => {
+          if (el.isConnected) el.removeAttribute("data-thb-pending");
+        });
+    });
   }
 
   window.__topicHtmlBlocksDebug = {
@@ -102,6 +268,8 @@ export default apiInitializer("0.8.41", (api) => {
     topicIds: Array.from(topicMap.keys()),
     globalBlocks: globalBlocks.map((g) => g.name || ""),
     locale: getCurrentLocale(),
+    enableRemote,
+    remoteBase,
   };
 
   if (topicMap.size === 0 && globalBlocks.length === 0) return;
@@ -112,19 +280,46 @@ export default apiInitializer("0.8.41", (api) => {
       const post = helper.getModel && helper.getModel();
       if (!post || post.post_number !== 1) return;
 
-      const block = topicMap.get(post.topic_id) || pickGlobalBlock(post);
-      if (!block) return;
+      // Topic-specific blocks always render. Global (all_topics) blocks render
+      // only at positions not already claimed by a topic-specific block, so a
+      // per-topic bottom card overrides the global bottom card while the global
+      // top strip still shows.
+      const specific = topicMap.get(post.topic_id) || [];
+      const specificPositions = new Set(specific.map(posOf));
+      const matched = specific.concat(
+        pickGlobalBlocks(post).filter((g) => !specificPositions.has(posOf(g)))
+      );
+      if (matched.length === 0) return;
 
-      const html = pickHtml(block);
-      if (!html) return;
+      for (const block of matched) {
+        const html = pickHtml(block);
+        if (!html) continue;
 
-      if (cooked.querySelector(":scope > .topic-html-block")) return;
+        const isTop = posOf(block) === "top";
+        const cls = isTop ? "topic-html-strip" : "topic-html-block";
+        const name = block.name || "";
+        const uid = block._uid || "b";
 
-      const wrapper = document.createElement("div");
-      wrapper.className = "topic-html-block";
-      wrapper.dataset.blockName = block.name || "";
-      wrapper.innerHTML = html;
-      cooked.appendChild(wrapper);
+        // Per-block idempotency (keyed by the stable uid) so multiple blocks can
+        // share a name/position and SPA re-decoration never duplicates a block.
+        if (cooked.querySelector(`:scope > [data-thb-uid="${cssEscape(uid)}"]`)) {
+          continue;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = cls;
+        wrapper.dataset.blockName = name;
+        wrapper.dataset.thbUid = uid;
+        wrapper.innerHTML = html;
+
+        if (isTop) {
+          cooked.prepend(wrapper);
+        } else {
+          cooked.appendChild(wrapper);
+        }
+
+        if (enableRemote) hydrateMarkers(wrapper);
+      }
     },
     { id: "topic-html-blocks" }
   );

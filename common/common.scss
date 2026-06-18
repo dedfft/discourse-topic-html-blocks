@@ -8,6 +8,21 @@
   }
 }
 
+// Top-of-article strip (position: top). Minimal wrapper — the CMS content
+// carries its own scoped styling (e.g. the blue "verified PR manager" pill).
+.topic-html-strip {
+  margin: 0 0 1rem;
+  width: 100%;
+}
+
+// Embedded lead-form iframe (block_type form). Height is set by the embed page
+// via postMessage; this is the base layout.
+.topic-html-form-iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+}
+
 .thb-html-textarea {
   width: 100%;
   min-height: 520px;

@@ -1,3 +1,11 @@
+enable_remote:
+  type: bool
+  default: true
+
+remote_base_url:
+  type: string
+  default: "https://papers.eliteskillset.com"
+
 blocks:
   type: objects
   default: []
@@ -18,6 +26,12 @@ blocks:
         type: categories
       exclude_topic_ids:
         type: string
+      position:
+        type: enum
+        default: bottom
+        choices:
+          - bottom
+          - top
       html:
         type: string
         required: true
