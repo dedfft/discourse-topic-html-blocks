@@ -4,7 +4,7 @@ import { apiInitializer } from "discourse/lib/api";
 // CMS and renders each at the slot the CMS reports (top strip / bottom card /
 // embedded form). Nothing to paste or configure per topic — papers.eliteskillset.com
 // fully controls content, language, on/off, and placement.
-export default apiInitializer("0.9.1", (api) => {
+export default apiInitializer("0.9.2", (api) => {
   const enabled = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
@@ -100,14 +100,21 @@ export default apiInitializer("0.9.1", (api) => {
   // not the full-page title container — match its width and left edge. Re-runs
   // on window resize so it stays aligned.
   let topStrip = null;
+  let stripObserver = null;
   function matchPostWidth() {
     if (!topStrip || !topStrip.wrap.isConnected || !topStrip.cooked.isConnected) return;
     try {
       const c = topStrip.cooked.getBoundingClientRect();
-      const h = topStrip.wrap.parentElement.getBoundingClientRect();
+      const host = topStrip.wrap.parentElement;
+      const h = host.getBoundingClientRect();
+      // marginLeft is measured from the host's CONTENT box, but getBoundingClientRect
+      // is border-box — subtract the host's left border + padding so the strip's left
+      // edge lands on the post column even when the title host has inline padding.
+      const hs = getComputedStyle(host);
+      const inset = (host.clientLeft || 0) + (parseFloat(hs.paddingLeft) || 0);
       if (c.width > 0) {
         topStrip.wrap.style.maxWidth = Math.round(c.width) + "px";
-        topStrip.wrap.style.marginLeft = Math.round(Math.max(0, c.left - h.left)) + "px";
+        topStrip.wrap.style.marginLeft = Math.round(Math.max(0, c.left - h.left - inset)) + "px";
       }
     } catch (e) {}
   }
@@ -127,6 +134,14 @@ export default apiInitializer("0.9.1", (api) => {
       }
       topStrip = { wrap, cooked };
       matchPostWidth();
+      // Re-measure after layout settles, and whenever the post column reflows
+      // (sidebar toggle, zoom, font/image load) — not only on window resize.
+      if (window.requestAnimationFrame) requestAnimationFrame(matchPostWidth);
+      if (window.ResizeObserver) {
+        if (stripObserver) stripObserver.disconnect();
+        stripObserver = new ResizeObserver(matchPostWidth);
+        stripObserver.observe(cooked);
+      }
       if (!resizeBound) {
         resizeBound = true;
         window.addEventListener("resize", matchPostWidth);
@@ -275,6 +290,11 @@ export default apiInitializer("0.9.1", (api) => {
     const onTopic = typeof url === "string" && url.includes("/t/");
     if (!onTopic) {
       document.querySelectorAll(".topic-html-strip--top").forEach((n) => n.remove());
+      if (stripObserver) {
+        stripObserver.disconnect();
+        stripObserver = null;
+      }
+      topStrip = null;
     }
   });
 });
