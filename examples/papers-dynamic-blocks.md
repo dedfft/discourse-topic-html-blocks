@@ -1,82 +1,32 @@
-# Dynamic blocks from papers.eliteskillset.com
+# Zero-config dynamic blocks
 
-Content is edited in the visual builder at `papers.eliteskillset.com/admin/blocks`
-and served as rendered HTML. Each block's `html` is a thin **marker**
-(`<div data-papers-src="…">`); on every page load the component fetches the URL
-and fills the element. The marker's inner HTML is the **offline fallback** shown
-if the fetch fails. Editing in the dashboard reflects on the next forum refresh —
-no theme rebuild.
+There is nothing to paste. Set **`remote_base_url`** (default
+`https://papers.eliteskillset.com`) and the component does the rest: on every
+topic's first post it fetches `{base}/api/forum-blocks?lang=<locale>` and renders
+each block at the slot the CMS reports:
 
-Two theme settings decide placement (placement is NOT set in papers):
-- **`blocks`** → rendered at the **bottom** of the first post (the community card).
-- **`top_blocks`** → rendered as a **strip at the top** of the article (the PR strip).
+- `pr-manager-strip` → a strip **above** the article
+- `community-promo` → the community card **below** the first post
+- `lead-form` → an embedded form (iframe), only when enabled in the CMS
 
-Requires `enable_remote` = on (default).
+Everything — content, languages (RU/EN/IT), on/off, and placement — is controlled
+in the CMS at **papers.eliteskillset.com/admin/blocks**. Edit there and it shows on
+the next forum page load; no theme change, no rebuild.
 
----
+## Settings
 
-## Community card → `blocks` (bottom)
+| Setting | Default | What it does |
+|---|---|---|
+| `enable_remote` | on | Master on/off for the whole component. |
+| `remote_base_url` | `https://papers.eliteskillset.com` | The CMS to fetch from. Usually the only thing you set. |
+| `compact_max_chars` | `600` | On a first post shorter than this, the card hides the sections marked "hide on short posts" in the builder (default: profession chats + support). `0` disables compact mode. |
 
-Per-language (paste each into its own block, targeted by topic/category):
-```html
-<div data-papers-src="https://papers.eliteskillset.com/api/forum-blocks/community-promo?lang=ru">Сообщество в Telegram — https://t.me/talentvisahelp</div>
-```
-…and `?lang=en`, `?lang=it`.
+## How it works
 
-Or one unified marker that auto-appends the viewer's language:
-```html
-<div data-papers-src-base="https://papers.eliteskillset.com/api/forum-blocks/community-promo">Сообщество — https://t.me/talentvisahelp</div>
-```
-
-Friendly alias also works: `https://papers.eliteskillset.com/api/form/card-ru`.
-
----
-
-## PR-manager strip → `top_blocks` (top)
-
-```html
-<div data-papers-src="https://papers.eliteskillset.com/api/forum-blocks/pr-manager-strip?lang=ru">Проверенный PR-менеджер — https://papers.eliteskillset.com/</div>
-```
-Alias: `https://papers.eliteskillset.com/api/form/strip-ru`.
-
----
-
-## Optional embedded form → `blocks`
-
-```html
-<div data-papers-src="https://papers.eliteskillset.com/api/forum-blocks/lead-form?lang=ru" data-papers-embed-src="https://papers.eliteskillset.com/embed/lead-form?lang=ru"></div>
-```
-
----
-
-## Sample settings
-
-`blocks` (bottom):
-```json
-[
-  {
-    "name": "community-ru",
-    "all_topics": true,
-    "html": "<div data-papers-src-base=\"https://papers.eliteskillset.com/api/forum-blocks/community-promo\">Сообщество — https://t.me/talentvisahelp</div>"
-  }
-]
-```
-
-`top_blocks` (top):
-```json
-[
-  {
-    "name": "pr-strip-ru",
-    "all_topics": true,
-    "html": "<div data-papers-src-base=\"https://papers.eliteskillset.com/api/forum-blocks/pr-manager-strip\">Проверенный PR-менеджер — https://papers.eliteskillset.com/</div>"
-  }
-]
-```
-
-Notes:
-- **Compact on short posts:** when the first post's text is under `compact_max_chars`
-  (default 600), the card hides the sections you toggled "hide on short posts" in
-  the builder (by default: profession chats + support). Long posts show everything.
-- A topic-specific block (with `topic_ids`) overrides an `all_topics` block **in the
-  same slot** (top or bottom).
-- `enable_remote: off` → every block renders the static fallback inside its marker.
+- One cached request per page (`/api/forum-blocks?lang=<locale>`); each block is
+  injected once and is safe across SPA navigation.
+- A block disabled (or its language disabled) in the CMS simply isn't rendered.
+- The CMS response includes a `slot` per block, so new blocks added in the CMS
+  render in the right place without any theme update.
+- Locale is auto-detected from the viewer (`<html lang>` / Discourse locale),
+  falling back to `ru`.
