@@ -46,21 +46,18 @@ export default apiInitializer("0.9.0", (api) => {
 
   // --- fetch (the whole bundle in one request, cached) ----------------------
   const inflight = new Map();
+  // IN-MEMORY cache (not sessionStorage): it's cleared on every full page reload,
+  // so a refresh always refetches fresh content. The short TTL only dedups the
+  // repeated decorateCookedElement calls within a single page render / SPA nav.
+  const memCache = new Map();
   function cacheGet(url) {
-    try {
-      const raw = sessionStorage.getItem("thb:" + url);
-      if (!raw) return null;
-      const o = JSON.parse(raw);
-      if (Date.now() - o.t > 60000) return null; // 60s TTL
-      return o.data;
-    } catch (e) {
-      return null;
-    }
+    const o = memCache.get(url);
+    if (!o) return null;
+    if (Date.now() - o.t > 10000) return null; // 10s
+    return o.data;
   }
   function cacheSet(url, data) {
-    try {
-      sessionStorage.setItem("thb:" + url, JSON.stringify({ data, t: Date.now() }));
-    } catch (e) {}
+    memCache.set(url, { data, t: Date.now() });
   }
   function fetchAll(lang) {
     const url = remoteBase + "/api/forum-blocks?lang=" + encodeURIComponent(lang);
@@ -70,7 +67,7 @@ export default apiInitializer("0.9.0", (api) => {
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 4000);
-    const p = fetch(url, { signal: ctrl.signal, credentials: "omit", mode: "cors" })
+    const p = fetch(url, { signal: ctrl.signal, credentials: "omit", mode: "cors", cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
       .then((data) => {
         cacheSet(url, data);
