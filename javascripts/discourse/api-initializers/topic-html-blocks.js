@@ -4,7 +4,7 @@ import { apiInitializer } from "discourse/lib/api";
 // CMS and renders each at the slot the CMS reports (top strip / bottom card /
 // embedded form). Nothing to paste or configure per topic — papers.eliteskillset.com
 // fully controls content, language, on/off, and placement.
-export default apiInitializer("0.9.0", (api) => {
+export default apiInitializer("0.9.1", (api) => {
   const enabled = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
@@ -120,6 +120,14 @@ export default apiInitializer("0.9.0", (api) => {
     cooked.prepend(wrap);
   }
 
+  // Remove any wrapper we previously injected for a key (post body card/form
+  // AND the title-area strip) — used when the CMS disables or drops a block.
+  function removeBlock(cooked, key) {
+    const sel = `[data-thb-key="${cssEscape(key)}"]`;
+    cooked.querySelectorAll(`:scope > ${sel}`).forEach((n) => n.remove());
+    document.querySelectorAll(`.topic-html-strip${sel}`).forEach((n) => n.remove());
+  }
+
   // --- lead-form iframe + postMessage auto-resize ---------------------------
   const formOrigins = new Set();
   let formListenerAdded = false;
@@ -133,7 +141,7 @@ export default apiInitializer("0.9.0", (api) => {
       document.querySelectorAll("iframe.topic-html-form-iframe").forEach((f) => {
         try {
           if (new URL(f.src).origin === e.origin) {
-            f.style.height = Math.max(200, d.height) + "px";
+            f.style.height = Math.min(4000, Math.max(200, d.height)) + "px";
           }
         } catch (err) {}
       });
@@ -189,18 +197,25 @@ export default apiInitializer("0.9.0", (api) => {
         .then((data) => {
           if (!cooked.isConnected) return;
           const blocks = (data && data.blocks) || {};
-          const keys = ORDER.filter((k) => blocks[k]).concat(
+          // Iterate ALL known keys (+ any extras) so a disabled/removed block is
+          // actively cleaned up, not merely skipped.
+          const keys = ORDER.concat(
             Object.keys(blocks).filter((k) => ORDER.indexOf(k) === -1)
           );
 
           for (const key of keys) {
             const b = blocks[key];
-            if (!b || b.enabled === false) continue;
-            const slot = b.slot || SLOT[key] || "bottom";
+            const slot = (b && b.slot) || SLOT[key] || "bottom";
+
+            // Disabled / removed / no content -> remove any wrapper we injected.
+            if (!b || b.enabled === false || (slot !== "form" && !b.html)) {
+              removeBlock(cooked, key);
+              continue;
+            }
 
             // Top strip → above the topic title (its own guard inside that fn).
             if (slot === "top") {
-              if (b.html) insertTopStrip(cooked, key, b.html);
+              insertTopStrip(cooked, key, b.html);
               continue;
             }
 
@@ -215,7 +230,6 @@ export default apiInitializer("0.9.0", (api) => {
               mountFormInto(wrap, remoteBase + "/embed/lead-form?lang=" + encodeURIComponent(lang));
               cooked.appendChild(wrap);
             } else {
-              if (!b.html) continue;
               const wrap = document.createElement("div");
               wrap.className = "topic-html-block";
               wrap.dataset.thbKey = key;
@@ -231,4 +245,14 @@ export default apiInitializer("0.9.0", (api) => {
     },
     { id: "topic-html-blocks" }
   );
+
+  // Clean up the title-area strip when navigating OFF a topic so it never
+  // lingers on /latest, categories, user pages, etc. On topics the decorator
+  // (re)inserts and dedupes it; remove-on-disable handles the disabled case.
+  api.onPageChange((url) => {
+    const onTopic = typeof url === "string" && url.includes("/t/");
+    if (!onTopic) {
+      document.querySelectorAll(".topic-html-strip--top").forEach((n) => n.remove());
+    }
+  });
 });
