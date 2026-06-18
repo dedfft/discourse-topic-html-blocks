@@ -96,19 +96,41 @@ export default apiInitializer("0.9.1", (api) => {
   // full-width (the --top CSS overrides the pill's centering so it lines up
   // with the title instead of floating in the middle). One strip per page;
   // content is identical on every topic, so no per-topic tracking is needed.
+  // Size the title-area strip to the POST content column (the cooked element),
+  // not the full-page title container — match its width and left edge. Re-runs
+  // on window resize so it stays aligned.
+  let topStrip = null;
+  function matchPostWidth() {
+    if (!topStrip || !topStrip.wrap.isConnected || !topStrip.cooked.isConnected) return;
+    try {
+      const c = topStrip.cooked.getBoundingClientRect();
+      const h = topStrip.wrap.parentElement.getBoundingClientRect();
+      if (c.width > 0) {
+        topStrip.wrap.style.maxWidth = Math.round(c.width) + "px";
+        topStrip.wrap.style.marginLeft = Math.round(Math.max(0, c.left - h.left)) + "px";
+      }
+    } catch (e) {}
+  }
+  let resizeBound = false;
   function insertTopStrip(cooked, key, html) {
     const titleEl =
       document.querySelector("#topic-title") || document.querySelector(".topic-title");
     const host = titleEl && titleEl.parentElement;
     if (titleEl && host) {
-      if (host.querySelector(`:scope > .topic-html-strip[data-thb-key="${cssEscape(key)}"]`)) {
-        return;
+      let wrap = host.querySelector(`:scope > .topic-html-strip[data-thb-key="${cssEscape(key)}"]`);
+      if (!wrap) {
+        wrap = document.createElement("div");
+        wrap.className = "topic-html-strip topic-html-strip--top";
+        wrap.dataset.thbKey = key;
+        renderHtml(wrap, html);
+        host.insertBefore(wrap, titleEl);
       }
-      const wrap = document.createElement("div");
-      wrap.className = "topic-html-strip topic-html-strip--top";
-      wrap.dataset.thbKey = key;
-      renderHtml(wrap, html);
-      host.insertBefore(wrap, titleEl);
+      topStrip = { wrap, cooked };
+      matchPostWidth();
+      if (!resizeBound) {
+        resizeBound = true;
+        window.addEventListener("resize", matchPostWidth);
+      }
       return;
     }
     // Fallback: top of the post body (guarded as a cooked child).
