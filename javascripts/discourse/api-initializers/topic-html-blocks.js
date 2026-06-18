@@ -95,6 +95,34 @@ export default apiInitializer("0.9.0", (api) => {
     if (card) card.classList.add("gtc--compact");
   }
 
+  // The top strip goes into the topic TITLE area — right below the title +
+  // category and above the post (author name) — not inside the post body. One
+  // strip per page; the content is the same on every topic so no per-topic
+  // tracking is needed.
+  function insertTopStrip(cooked, key, html) {
+    const titleEl =
+      document.querySelector("#topic-title") || document.querySelector(".topic-title");
+    const host = titleEl && titleEl.parentElement;
+    if (titleEl && host) {
+      if (host.querySelector(`:scope > .topic-html-strip[data-thb-key="${cssEscape(key)}"]`)) {
+        return;
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "topic-html-strip topic-html-strip--title";
+      wrap.dataset.thbKey = key;
+      renderHtml(wrap, html);
+      titleEl.insertAdjacentElement("afterend", wrap);
+      return;
+    }
+    // Fallback: top of the post body (guarded as a cooked child).
+    if (cooked.querySelector(`:scope > [data-thb-key="${cssEscape(key)}"]`)) return;
+    const wrap = document.createElement("div");
+    wrap.className = "topic-html-strip";
+    wrap.dataset.thbKey = key;
+    renderHtml(wrap, html);
+    cooked.prepend(wrap);
+  }
+
   // --- lead-form iframe + postMessage auto-resize ---------------------------
   const formOrigins = new Set();
   let formListenerAdded = false;
@@ -171,26 +199,24 @@ export default apiInitializer("0.9.0", (api) => {
           for (const key of keys) {
             const b = blocks[key];
             if (!b || b.enabled === false) continue;
+            const slot = b.slot || SLOT[key] || "bottom";
 
-            // Idempotency: one wrapper per key, SPA-re-decoration safe.
+            // Top strip lives in the title area (its own guard, not a cooked child).
+            if (slot === "top") {
+              if (b.html) insertTopStrip(cooked, key, b.html);
+              continue;
+            }
+
+            // bottom / form: a child of the post body, guarded per key.
             if (cooked.querySelector(`:scope > [data-thb-key="${cssEscape(key)}"]`)) {
               continue;
             }
-            const slot = b.slot || SLOT[key] || "bottom";
-
             if (slot === "form") {
               const wrap = document.createElement("div");
               wrap.className = "topic-html-block";
               wrap.dataset.thbKey = key;
               mountFormInto(wrap, remoteBase + "/embed/lead-form?lang=" + encodeURIComponent(lang));
               cooked.appendChild(wrap);
-            } else if (slot === "top") {
-              if (!b.html) continue;
-              const wrap = document.createElement("div");
-              wrap.className = "topic-html-strip";
-              wrap.dataset.thbKey = key;
-              renderHtml(wrap, b.html);
-              cooked.prepend(wrap);
             } else {
               if (!b.html) continue;
               const wrap = document.createElement("div");
