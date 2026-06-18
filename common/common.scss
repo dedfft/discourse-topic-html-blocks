@@ -15,6 +15,18 @@
   width: 100%;
 }
 
+// Placed above the topic title: span the full width and kill the inner pill's
+// centering (.tprm defaults to max-width:680px;margin:auto) so it lines up with
+// the title/banner instead of floating in the middle.
+.topic-html-strip--top {
+  margin: 0.25rem 0 0.75rem;
+
+  .tprm {
+    max-width: 100%;
+    margin: 0;
+  }
+}
+
 // Embedded lead-form iframe (block_type form). Height is set by the embed page
 // via postMessage; this is the base layout.
 .topic-html-form-iframe {
