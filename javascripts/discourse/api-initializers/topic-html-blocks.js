@@ -4,7 +4,7 @@ import { apiInitializer } from "discourse/lib/api";
 // CMS and renders each at the slot the CMS reports (top strip / bottom card /
 // embedded form). Nothing to paste or configure per topic — papers.eliteskillset.com
 // fully controls content, language, on/off, and placement.
-export default apiInitializer("0.9.2", (api) => {
+export default apiInitializer("0.9.3", (api) => {
   const enabled = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
@@ -44,6 +44,36 @@ export default apiInitializer("0.9.2", (api) => {
     return String(s).replace(/["\\\]]/g, "\\$&");
   }
 
+  // --- paid-source marker (sp) ------------------------------------------------
+  // Sets sp=1 on the CMS fetch when the entry URL carries a paid click marker
+  // (any of the markers below, or the source/medium pair). The marker only rides
+  // the ENTRY url, so a positive hit is remembered for the SESSION. The param
+  // name and storage key are intentionally non-descriptive. All storage/URL
+  // access is try/catch-guarded for private-mode safety.
+  var SP_KEYS = ["gclid", "gbraid", "wbraid", "gad_source", "gad_campaignid"];
+  var SP_STORE = "es_sp";
+  function isSp() {
+    try {
+      try {
+        if (window.sessionStorage.getItem(SP_STORE) === "1") return true;
+      } catch (e) {}
+      var q = new URLSearchParams(window.location.search);
+      var hit =
+        SP_KEYS.some(function (k) {
+          return !!q.get(k);
+        }) ||
+        (q.get("utm_source") === "google" && q.get("utm_medium") === "cpc");
+      if (hit) {
+        try {
+          window.sessionStorage.setItem(SP_STORE, "1");
+        } catch (e) {}
+      }
+      return hit;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // --- fetch (the whole bundle in one request, cached) ----------------------
   const inflight = new Map();
   // IN-MEMORY cache (not sessionStorage): it's cleared on every full page reload,
@@ -60,7 +90,10 @@ export default apiInitializer("0.9.2", (api) => {
     memCache.set(url, { data, t: Date.now() });
   }
   function fetchAll(lang) {
-    const url = remoteBase + "/api/forum-blocks?lang=" + encodeURIComponent(lang);
+    // sp is part of the URL, so the two render variants get separate cache
+    // entries (memCache/inflight key off the full URL) and never cross-serve.
+    const spQ = isSp() ? "&sp=1" : "";
+    const url = remoteBase + "/api/forum-blocks?lang=" + encodeURIComponent(lang) + spQ;
     const cached = cacheGet(url);
     if (cached) return Promise.resolve(cached);
     if (inflight.has(url)) return inflight.get(url);
