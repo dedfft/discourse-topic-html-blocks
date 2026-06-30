@@ -4,7 +4,7 @@ import { apiInitializer } from "discourse/lib/api";
 // CMS and renders each at the slot the CMS reports (top strip / bottom card /
 // embedded form). Nothing to paste or configure per topic — papers.eliteskillset.com
 // fully controls content, language, on/off, and placement.
-export default apiInitializer("0.9.3", (api) => {
+export default apiInitializer("0.9.4", (api) => {
   const enabled = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
@@ -50,6 +50,14 @@ export default apiInitializer("0.9.3", (api) => {
   // the ENTRY url, so a positive hit is remembered for the SESSION. The param
   // name and storage key are intentionally non-descriptive. All storage/URL
   // access is try/catch-guarded for private-mode safety.
+  //
+  // Timing note: Discourse's server 301s the short /t/<id> form to the canonical
+  // /t/<slug>/<id> and DROPS the query string, and the SPA re-writes the URL on
+  // route transitions. So we read the entry URL as EARLY as possible (the boot
+  // call below) and persist the verdict to sessionStorage for the rest of the
+  // session. The #sp hash is a QA override: a fragment survives the 301 (the
+  // browser re-attaches it to the redirect target), so /t/<id>#sp is a shareable
+  // test link that flips the gate on without real ad params.
   var SP_KEYS = ["gclid", "gbraid", "wbraid", "gad_source", "gad_campaignid"];
   var SP_STORE = "es_sp";
   function isSp() {
@@ -59,6 +67,7 @@ export default apiInitializer("0.9.3", (api) => {
       } catch (e) {}
       var q = new URLSearchParams(window.location.search);
       var hit =
+        (window.location.hash || "").toLowerCase() === "#sp" ||
         SP_KEYS.some(function (k) {
           return !!q.get(k);
         }) ||
@@ -73,6 +82,11 @@ export default apiInitializer("0.9.3", (api) => {
       return false;
     }
   }
+
+  // Capture the marker at BOOT (full page load), before the SPA router can
+  // normalize the topic URL and discard the query. fetchAll re-reads it (from
+  // sessionStorage) on every decorate for the rest of the session.
+  isSp();
 
   // --- fetch (the whole bundle in one request, cached) ----------------------
   const inflight = new Map();
