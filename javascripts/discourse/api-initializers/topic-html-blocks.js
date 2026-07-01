@@ -1,10 +1,6 @@
 import { apiInitializer } from "discourse/lib/api";
 
-// Zero-config: set remote_base_url and the component fetches ALL blocks from the
-// CMS and renders each at the slot the CMS reports (top strip / bottom card /
-// embedded form). Nothing to paste or configure per topic — papers.eliteskillset.com
-// fully controls content, language, on/off, and placement.
-export default apiInitializer("0.9.5", (api) => {
+export default apiInitializer("0.9.6", (api) => {
   const enabled = settings.enable_remote !== false;
   const remoteBase = String(
     settings.remote_base_url || "https://papers.eliteskillset.com"
@@ -13,7 +9,6 @@ export default apiInitializer("0.9.5", (api) => {
   const compactMax = isNaN(compactMaxRaw) ? 600 : compactMaxRaw;
   if (!enabled || !remoteBase) return;
 
-  // Fallback slot mapping when the API doesn't report one; render order too.
   const SLOT = {
     "pr-manager-strip": "top",
     "community-promo": "bottom",
@@ -44,15 +39,6 @@ export default apiInitializer("0.9.5", (api) => {
     return String(s).replace(/["\\\]]/g, "\\$&");
   }
 
-  // --- paid-source marker (sp) ------------------------------------------------
-  // Read LIVE from the CURRENT url on every check — no sessionStorage, no caching.
-  // The link is served only WHILE the url actually carries a paid marker
-  // (gclid/gbraid/wbraid/gad_source/gad_campaignid, or the utm_source=google &
-  // utm_medium=cpc pair). Discourse keeps the query string on the canonical
-  // /t/<slug>/<id> url through the SPA lifecycle (verified in-browser: it is still
-  // in location.search after load), so reading it at decorate time still sees the
-  // entry tag. A tag-less load / reload therefore does NOT show the link. `#sp` is
-  // a QA override for manual testing. Guarded for safety.
   var SP_KEYS = ["gclid", "gbraid", "wbraid", "gad_source", "gad_campaignid"];
   function isSp() {
     try {
@@ -69,24 +55,18 @@ export default apiInitializer("0.9.5", (api) => {
     }
   }
 
-  // --- fetch (the whole bundle in one request, cached) ----------------------
   const inflight = new Map();
-  // IN-MEMORY cache (not sessionStorage): it's cleared on every full page reload,
-  // so a refresh always refetches fresh content. The short TTL only dedups the
-  // repeated decorateCookedElement calls within a single page render / SPA nav.
   const memCache = new Map();
   function cacheGet(url) {
     const o = memCache.get(url);
     if (!o) return null;
-    if (Date.now() - o.t > 10000) return null; // 10s
+    if (Date.now() - o.t > 10000) return null;
     return o.data;
   }
   function cacheSet(url, data) {
     memCache.set(url, { data, t: Date.now() });
   }
   function fetchAll(lang) {
-    // sp is part of the URL, so the two render variants get separate cache
-    // entries (memCache/inflight key off the full URL) and never cross-serve.
     const spQ = isSp() ? "&sp=1" : "";
     const url = remoteBase + "/api/forum-blocks?lang=" + encodeURIComponent(lang) + spQ;
     const cached = cacheGet(url);
@@ -110,8 +90,6 @@ export default apiInitializer("0.9.5", (api) => {
   }
 
   function renderHtml(el, html) {
-    // Trust boundary: html comes only from the first-party CMS over HTTPS.
-    // <script> never executes via innerHTML. Harden via DOMPurify here if needed.
     el.innerHTML = html;
   }
   function applyCompact(scope, isShort) {
@@ -120,13 +98,6 @@ export default apiInitializer("0.9.5", (api) => {
     if (card) card.classList.add("gtc--compact");
   }
 
-  // Top strip → ABOVE the topic title (below any banner, above the title),
-  // full-width (the --top CSS overrides the pill's centering so it lines up
-  // with the title instead of floating in the middle). One strip per page;
-  // content is identical on every topic, so no per-topic tracking is needed.
-  // Size the title-area strip to the POST content column (the cooked element),
-  // not the full-page title container — match its width and left edge. Re-runs
-  // on window resize so it stays aligned.
   let topStrip = null;
   let stripObserver = null;
   function matchPostWidth() {
@@ -135,9 +106,6 @@ export default apiInitializer("0.9.5", (api) => {
       const c = topStrip.cooked.getBoundingClientRect();
       const host = topStrip.wrap.parentElement;
       const h = host.getBoundingClientRect();
-      // marginLeft is measured from the host's CONTENT box, but getBoundingClientRect
-      // is border-box — subtract the host's left border + padding so the strip's left
-      // edge lands on the post column even when the title host has inline padding.
       const hs = getComputedStyle(host);
       const inset = (host.clientLeft || 0) + (parseFloat(hs.paddingLeft) || 0);
       if (c.width > 0) {
@@ -162,8 +130,6 @@ export default apiInitializer("0.9.5", (api) => {
       }
       topStrip = { wrap, cooked };
       matchPostWidth();
-      // Re-measure after layout settles, and whenever the post column reflows
-      // (sidebar toggle, zoom, font/image load) — not only on window resize.
       if (window.requestAnimationFrame) requestAnimationFrame(matchPostWidth);
       if (window.ResizeObserver) {
         if (stripObserver) stripObserver.disconnect();
@@ -176,7 +142,6 @@ export default apiInitializer("0.9.5", (api) => {
       }
       return;
     }
-    // Fallback: top of the post body (guarded as a cooked child).
     if (cooked.querySelector(`:scope > [data-thb-key="${cssEscape(key)}"]`)) return;
     const wrap = document.createElement("div");
     wrap.className = "topic-html-strip";
@@ -185,15 +150,12 @@ export default apiInitializer("0.9.5", (api) => {
     cooked.prepend(wrap);
   }
 
-  // Remove any wrapper we previously injected for a key (post body card/form
-  // AND the title-area strip) — used when the CMS disables or drops a block.
   function removeBlock(cooked, key) {
     const sel = `[data-thb-key="${cssEscape(key)}"]`;
     cooked.querySelectorAll(`:scope > ${sel}`).forEach((n) => n.remove());
     document.querySelectorAll(`.topic-html-strip${sel}`).forEach((n) => n.remove());
   }
 
-  // --- lead-form iframe + postMessage auto-resize ---------------------------
   const formOrigins = new Set();
   let formListenerAdded = false;
   function ensureFormListener() {
@@ -232,7 +194,6 @@ export default apiInitializer("0.9.5", (api) => {
     ensureFormListener();
   }
 
-  // Post body length, EXCLUDING blocks we injected (stable across re-decoration).
   function postTextLen(cooked) {
     let len = 0;
     cooked.childNodes.forEach((n) => {
@@ -247,8 +208,6 @@ export default apiInitializer("0.9.5", (api) => {
     return len;
   }
 
-  window.__topicHtmlBlocksDebug = { remoteBase, compactMax, locale: getCurrentLocale() };
-
   api.decorateCookedElement(
     (cooked, helper) => {
       if (!helper) return;
@@ -262,8 +221,6 @@ export default apiInitializer("0.9.5", (api) => {
         .then((data) => {
           if (!cooked.isConnected) return;
           const blocks = (data && data.blocks) || {};
-          // Iterate ALL known keys (+ any extras) so a disabled/removed block is
-          // actively cleaned up, not merely skipped.
           const keys = ORDER.concat(
             Object.keys(blocks).filter((k) => ORDER.indexOf(k) === -1)
           );
@@ -272,19 +229,16 @@ export default apiInitializer("0.9.5", (api) => {
             const b = blocks[key];
             const slot = (b && b.slot) || SLOT[key] || "bottom";
 
-            // Disabled / removed / no content -> remove any wrapper we injected.
             if (!b || b.enabled === false || (slot !== "form" && !b.html)) {
               removeBlock(cooked, key);
               continue;
             }
 
-            // Top strip → above the topic title (its own guard inside that fn).
             if (slot === "top") {
               insertTopStrip(cooked, key, b.html);
               continue;
             }
 
-            // bottom / form: children of the post body, guarded per key.
             if (cooked.querySelector(`:scope > [data-thb-key="${cssEscape(key)}"]`)) {
               continue;
             }
@@ -304,16 +258,11 @@ export default apiInitializer("0.9.5", (api) => {
             }
           }
         })
-        .catch(() => {
-          /* network error / timeout -> render nothing */
-        });
+        .catch(() => {});
     },
     { id: "topic-html-blocks" }
   );
 
-  // Clean up the title-area strip when navigating OFF a topic so it never
-  // lingers on /latest, categories, user pages, etc. On topics the decorator
-  // (re)inserts and dedupes it; remove-on-disable handles the disabled case.
   api.onPageChange((url) => {
     const onTopic = typeof url === "string" && url.includes("/t/");
     if (!onTopic) {
